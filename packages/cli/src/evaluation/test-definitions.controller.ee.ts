@@ -2,31 +2,25 @@ import express from 'express';
 import assert from 'node:assert';
 
 import { Get, Post, Patch, RestController, Delete } from '@/decorators';
-import { BadRequestError } from '@/errors/response-errors/bad-request.error';
 import { ForbiddenError } from '@/errors/response-errors/forbidden.error';
 import { NotFoundError } from '@/errors/response-errors/not-found.error';
 import {
 	testDefinitionCreateRequestBodySchema,
 	testDefinitionPatchRequestBodySchema,
 } from '@/evaluation/test-definition.schema';
+import { TestRunnerService } from '@/evaluation/test-runner/test-runner.service.ee';
 import { listQueryMiddleware } from '@/middlewares';
 import { getSharedWorkflowIds } from '@/public-api/v1/handlers/workflows/workflows.service';
-import { isPositiveInteger } from '@/utils';
 
 import { TestDefinitionService } from './test-definition.service.ee';
 import { TestDefinitionsRequest } from './test-definitions.types.ee';
 
 @RestController('/evaluation/test-definitions')
 export class TestDefinitionsController {
-	private validateId(id: string) {
-		if (!isPositiveInteger(id)) {
-			throw new BadRequestError('Test ID is not a number');
-		}
-
-		return Number(id);
-	}
-
-	constructor(private readonly testDefinitionService: TestDefinitionService) {}
+	constructor(
+		private readonly testDefinitionService: TestDefinitionService,
+		private readonly testRunnerService: TestRunnerService,
+	) {}
 
 	@Get('/', { middlewares: listQueryMiddleware })
 	async getMany(req: TestDefinitionsRequest.GetMany) {
@@ -40,7 +34,7 @@ export class TestDefinitionsController {
 
 	@Get('/:id')
 	async getOne(req: TestDefinitionsRequest.GetOne) {
-		const testDefinitionId = this.validateId(req.params.id);
+		const { id: testDefinitionId } = req.params;
 
 		const userAccessibleWorkflowIds = await getSharedWorkflowIds(req.user, ['workflow:read']);
 
@@ -82,7 +76,7 @@ export class TestDefinitionsController {
 
 	@Delete('/:id')
 	async delete(req: TestDefinitionsRequest.Delete) {
-		const testDefinitionId = this.validateId(req.params.id);
+		const { id: testDefinitionId } = req.params;
 
 		const userAccessibleWorkflowIds = await getSharedWorkflowIds(req.user, ['workflow:read']);
 
@@ -96,7 +90,7 @@ export class TestDefinitionsController {
 
 	@Patch('/:id')
 	async patch(req: TestDefinitionsRequest.Patch, res: express.Response) {
-		const testDefinitionId = this.validateId(req.params.id);
+		const { id: testDefinitionId } = req.params;
 
 		const bodyParseResult = testDefinitionPatchRequestBodySchema.safeParse(req.body);
 		if (!bodyParseResult.success) {
@@ -134,5 +128,21 @@ export class TestDefinitionsController {
 		assert(testDefinition, 'Test definition not found');
 
 		return testDefinition;
+	}
+
+	@Post('/:id/run')
+	async runTest(req: TestDefinitionsRequest.Run, res: express.Response) {
+		const { id: testDefinitionId } = req.params;
+
+		const workflowIds = await getSharedWorkflowIds(req.user, ['workflow:read']);
+
+		// Check test definition exists
+		const testDefinition = await this.testDefinitionService.findOne(testDefinitionId, workflowIds);
+		if (!testDefinition) throw new NotFoundError('Test definition not found');
+
+		// We do not await for the test run to complete
+		void this.testRunnerService.runTest(req.user, testDefinition);
+
+		res.status(202).json({ success: true });
 	}
 }
